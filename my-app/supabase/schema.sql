@@ -1,0 +1,14 @@
+-- Reference schema for the class Supabase database.
+-- Do NOT run CREATE TABLE — use the existing class database. Do not add/delete fields or tables.
+-- Get the exact schema from Supabase: Table Editor → images → "copy to SQL" (or see table settings).
+--
+-- Table: public.images (main table for Assignment 2 list page)
+-- Use these field names in the app when rendering the grid. Adjust if your class DB differs.
+--
+-- Typical columns (match your Supabase table):
+--   id          uuid PRIMARY KEY
+--   url         text   -- image URL (may be named image_url in your DB)
+--   title       text   -- or prompt / caption text
+--   created_at  timestamptz
+--
+-- Related: captions.image_id → images.id; caption_votes references captions.

@@ -3,6 +3,9 @@ import type { Image } from "@/src/types/supabase";
 
 const IMAGES_TABLE = "images";
 
+/** Force server render per request so HTML matches client (avoids build-time empty state vs runtime data). */
+export const dynamic = "force-dynamic";
+
 async function getImages(): Promise<{
   data: Image[];
   error: string | null;
@@ -64,7 +67,11 @@ export default async function Home() {
               const title = imageTitle(row);
               const date =
                 typeof row.created_at === "string"
-                  ? new Date(row.created_at).toLocaleDateString()
+                  ? new Date(row.created_at).toLocaleDateString("en-US", {
+                      year: "numeric",
+                      month: "short",
+                      day: "numeric",
+                    })
                   : null;
 
               return (
@@ -94,6 +101,7 @@ export default async function Home() {
                       <time
                         dateTime={typeof row.created_at === "string" ? row.created_at : undefined}
                         className="text-sm text-[var(--foreground)]/60"
+                        suppressHydrationWarning
                       >
                         {date}
                       </time>

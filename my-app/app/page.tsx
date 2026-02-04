@@ -1,9 +1,19 @@
-import { supabase } from "@/lib/supabase/client";
+import { getSupabase } from "@/lib/supabase/client";
 import type { Image } from "@/src/types/supabase";
 
 const IMAGES_TABLE = "images";
 
-async function getImages(): Promise<{ data: Image[]; error: string | null }> {
+async function getImages(): Promise<{
+  data: Image[];
+  error: string | null;
+}> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    return {
+      data: [],
+      error: "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY",
+    };
+  }
   const { data, error } = await supabase.from(IMAGES_TABLE).select("*");
 
   if (error) return { data: [], error: error.message };

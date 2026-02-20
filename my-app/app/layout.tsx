@@ -19,7 +19,7 @@ export default function RootLayout({
         <header className="border-b border-[var(--foreground)]/10 bg-[var(--background)]">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
             <Link href="/" className="text-lg font-semibold text-[var(--foreground)]">
-              Images
+              Humor Study
             </Link>
             <div className="flex items-center gap-4">
               <AuthStatus />

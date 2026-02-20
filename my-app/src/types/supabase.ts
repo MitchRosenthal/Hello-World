@@ -13,3 +13,22 @@ export type Image = {
   created_at?: string | null;
   [key: string]: unknown;
 };
+
+/** Row from public.captions (caption_votes.caption_id → captions.id) */
+export type Caption = {
+  id: string;
+  image_id: string;
+  text?: string | null;
+  content?: string | null;
+  caption_text?: string | null;
+  [key: string]: unknown;
+};
+
+/** Insert shape for public.caption_votes (profile_id = auth user id) */
+export type CaptionVoteInsert = {
+  caption_id: string;
+  profile_id: string;
+  vote_value: 1 | -1;
+  created_datetime_utc: string;
+  modified_datetime_utc: string;
+};

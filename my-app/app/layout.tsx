@@ -22,6 +22,12 @@ export default function RootLayout({
               Humor Study
             </Link>
             <div className="flex items-center gap-4">
+              <Link
+                href="/upload"
+                className="text-sm font-medium text-[var(--foreground)]/80 hover:text-[var(--foreground)]"
+              >
+                Upload
+              </Link>
               <AuthStatus />
             </div>
           </div>

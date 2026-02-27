@@ -6,8 +6,8 @@ Guidance for AI agents working on this app. Keep this file updated when making s
 
 ## Workflow for agents
 
-1. **Before changing auth, layout, routing, or Supabase:** Read this file, especially **Auth rules** and **Conventions**. Do not change callback redirect, server/browser client usage, sign-out flow, or protected-route pattern unless the user explicitly asks.
-2. **After making changes:** Add a **new changelog entry at the top** of the Changelog section: date, list of files touched, and a one- or two-line description of what changed. This keeps a running log and helps avoid undoing past progress.
+1. **At the start of any task that will change code:** Read this file (at least this section and anything relevant to what you’re changing). For auth, layout, routing, or Supabase, read **Auth rules** and **Conventions** and do not change callback redirect, server/browser client usage, sign-out flow, or protected-route pattern unless the user explicitly asks.
+2. **After every code change:** Add a **new changelog entry at the top** of the **Changelog** section below: date, list of files touched, and a one- or two-line description of what changed. Do this for every change that modifies app behavior or structure so the log stays up to date.
 3. **When in doubt:** Prefer minimal edits that preserve existing behavior; refer to the changelog to see why things are set up as they are.
 
 ---
@@ -44,6 +44,8 @@ my-app/
 │   ├── login/
 │   │   ├── page.tsx            # Server component; redirect to / if user exists, else <SignInForm />
 │   │   └── SignInForm.tsx      # Client; "Sign in with Google" (OAuth, prompt: select_account)
+│   ├── upload/
+│   │   └── page.tsx            # Protected; renders ImageUploadForm (full pipeline)
 │   ├── auth/
 │   │   ├── callback/route.ts   # GET: exchange code for session, redirect to requestUrl.origin only
 │   │   └── signout/route.ts    # GET: signOut(), clear sb-* cookies, redirect to /login
@@ -91,6 +93,76 @@ my-app/
 ## Changelog (changes made to the app)
 
 *Agents: append new entries at the top of this section when you change behavior or structure.*
+
+---
+
+### 2025-01-29 — Upload form: image first, captions in boxes below
+
+- **Files:** `app/components/ImageUploadForm.tsx`, `AGENTS.md`
+- **Change:** Layout reordered so uploaded image appears first; generated captions section is placed below the image. Each caption is rendered in its own box (rounded border, light bg, padding) for clear separation and readability.
+
+---
+
+### 2025-01-29 — Drag and drop on upload form
+
+- **Files:** `app/components/ImageUploadForm.tsx`, `AGENTS.md`
+- **Change:** Upload area is a drop zone: drag-over highlights border/background; drop sets selected file (same type validation as file input). Extracted applyFile() for input and drop; added “or drag and drop an image here” hint.
+
+---
+
+### 2025-01-29 — Upload entry point: header link + /upload page with ImageUploadForm
+
+- **Files:** `app/layout.tsx`, `app/upload/page.tsx`, `AGENTS.md`
+- **Change:** Added “Upload” link in header to `/upload`. Upload page is server component: protected (getUser, redirect to /login), renders client `ImageUploadForm` so users have a visible place to upload images and generate captions.
+
+---
+
+### 2025-01-29 — New /upload page (client component, no API yet)
+
+- **Files:** `app/upload/page.tsx` (new), `AGENTS.md`
+- **Change:** New route at `/upload`. Client component: file input (accept JPEG, PNG, WebP, GIF, HEIC), selected file in state, preview via object URL, “Upload & Generate Captions” button (no API calls yet). Displays file name and exact input path (e.g. C:\fakepath\…). Minimal styling.
+
+---
+
+### 2025-01-29 — Server Supabase client: no throw when setAll in read-only cookie context
+
+- **Files:** `lib/supabase/server.ts`, `AGENTS.md`
+- **Change:** Wrapped `setAll` cookie writes in try/catch. During Server Component render, Next.js allows only reading cookies; when Supabase refreshes the session it calls setAll and cookieStore.set() would throw. Catching and ignoring prevents "Cookies can only be modified in a Server Action or Route Handler" on GET /; session writes still work in Route Handlers (e.g. auth callback).
+
+---
+
+### 2025-01-29 — Single controlled pipeline for upload + captions (Steps 1–4)
+
+- **Files:** `app/components/ImageUploadForm.tsx`, `AGENTS.md`
+- **Change:** Wired all four steps into one handler: sequential execution; on any step failure setError and return; loading during process; button disabled when loading to prevent double submission; setCaptions(null) at start so previous captions clear on new upload. Added comments marking Step 1–4 in handleUploadClick. No refactor of individual step logic.
+
+---
+
+### 2025-01-29 — Caption pipeline Step 4: generate captions and render in UI
+
+- **Files:** `app/components/ImageUploadForm.tsx`, `AGENTS.md`
+- **Change:** After Step 3 (imageId), POST to `https://api.almostcrackd.ai/pipeline/generate-captions` with `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{ imageId }`. Response: expect array of caption records (raw array or `captions`/`data`); normalize to string[] via `.text`/`.caption`/`.content` or string. Store in `captions` state; render as bullet list below success message. Loading/error handled in existing try/catch and setError.
+
+---
+
+### 2025-01-29 — Workflow: read AGENTS.md every code change; changelog every time
+
+- **Files:** `AGENTS.md`
+- **Change:** Workflow step 1 now requires reading this file at the start of **any** task that will change code (not only auth/layout/routing/Supabase). Step 2 clarified: add a changelog entry **after every code change** so the log remains up to date.
+
+---
+
+### 2025-01-29 — Caption pipeline Step 3: register image from CDN URL
+
+- **Files:** `app/components/ImageUploadForm.tsx`, `AGENTS.md`
+- **Change:** After uploading bytes to the presigned URL, POST to `https://api.almostcrackd.ai/pipeline/upload-image-from-url` with `Authorization: Bearer <token>`, `Content-Type: application/json`, body `{ imageUrl: cdnUrl, isCommonUse: false }`. Store returned `imageId` in state; handle non-2xx and missing `imageId`. Success message shows only when `presignedUrl && cdnUrl && imageId`. Caption generation (Step 4) not implemented.
+
+---
+
+### 2025-01-29 — Caption pipeline Step 2: upload image bytes to presigned URL
+
+- **Files:** `app/components/ImageUploadForm.tsx`
+- **Change:** After Step 1 returns presignedUrl and cdnUrl, PUT raw file bytes to presigned URL with `Content-Type: selectedFile.type`, no Authorization. Success = 2xx; on non-2xx or throw, set error and return. PresignedUrl/cdnUrl set in state only after upload succeeds.
 
 ---
 

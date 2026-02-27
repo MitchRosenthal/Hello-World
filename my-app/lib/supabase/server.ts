@@ -13,11 +13,15 @@ export async function createClient() {
           return cookieStore.getAll();
         },
         setAll(cookiesToSet: { name: string; value: string; options?: object }[]) {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            const opts = options && typeof options === "object" ? { ...options } : {};
-            delete (opts as Record<string, unknown>).name;
-            cookieStore.set(name, value, opts);
-          });
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              const opts = options && typeof options === "object" ? { ...options } : {};
+              delete (opts as Record<string, unknown>).name;
+              cookieStore.set(name, value, opts);
+            });
+          } catch {
+            // Cookies are read-only during Server Component render; ignore when Supabase tries to refresh session.
+          }
         },
       },
     }

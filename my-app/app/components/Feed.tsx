@@ -37,9 +37,13 @@ export function Feed({ userId }: Props) {
   const [votingCaptionId, setVotingCaptionId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [bootstrapped, setBootstrapped] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
-  // Track captions we've already shown so refresh can serve unseen content.
+  // Captions to hide from the feed: anything the user has already voted on
+  // (loaded from caption_votes on mount + appended whenever they vote in-session)
+  // PLUS captions shown in this session (so infinite-scroll batches don't repeat).
+  const votedIdsRef = useRef<Set<string>>(new Set());
   const seenCaptionIds = useRef<Set<string>>(new Set());
 
   // Per-card swipe gesture tracking.
@@ -47,7 +51,7 @@ export function Feed({ userId }: Props) {
   const [dragX, setDragX] = useState<Record<string, number>>({});
 
   const loadBatch = useCallback(
-    async (from: number, opts: { reset?: boolean; excludeSeen?: boolean } = {}) => {
+    async (from: number, opts: { reset?: boolean } = {}) => {
       const supabase = getSupabase();
       if (!supabase) {
         setError("Supabase not configured.");
@@ -62,10 +66,15 @@ export function Feed({ userId }: Props) {
         .order("id", { ascending: true })
         .range(from, from + BATCH_SIZE - 1);
 
-      if (opts.excludeSeen && seenCaptionIds.current.size > 0) {
+      // Always exclude captions the user has already voted on or already seen
+      // this session — voted memes shouldn't reappear in the feed.
+      const excluded = new Set<string>([
+        ...votedIdsRef.current,
+        ...seenCaptionIds.current,
+      ]);
+      if (excluded.size > 0) {
         // Supabase's not.in expects a parenthesized list literal.
-        const ids = Array.from(seenCaptionIds.current);
-        query = query.not("id", "in", `(${ids.join(",")})`);
+        query = query.not("id", "in", `(${Array.from(excluded).join(",")})`);
       }
 
       const { data: rows, error: captionsError } = await query;
@@ -91,35 +100,58 @@ export function Feed({ userId }: Props) {
 
       const captionIds = newItems.map((item) => item.caption.id);
 
-      const voteMap: Record<string, 1 | -1> = {};
-      if (userId && captionIds.length > 0) {
-        const { data: votes } = await supabase
-          .from(CAPTION_VOTES_TABLE)
-          .select("caption_id, vote_value")
-          .eq("profile_id", userId)
-          .in("caption_id", captionIds);
-        for (const v of votes ?? []) {
-          const val = v.vote_value;
-          if (val === 1 || val === -1) voteMap[v.caption_id] = val;
-        }
-      }
-
-      // Track seen ids for the unseen-aware refresh.
+      // Track seen ids so the next batch / refresh skips what's on screen.
       for (const id of captionIds) seenCaptionIds.current.add(id);
 
       setItems((prev) => (opts.reset ? newItems : [...prev, ...newItems]));
-      setVoteState((prev) => (opts.reset ? voteMap : { ...prev, ...voteMap }));
-      setOffset(opts.reset ? newItems.length : from + newItems.length);
+      // Note: voteState for these items is empty by definition (we excluded voted captions).
+      setOffset(opts.reset ? rows.length : from + rows.length);
       setHasMore(rows.length === BATCH_SIZE);
       setLoading(false);
       return { count: newItems.length };
     },
-    [userId]
+    []
   );
 
+  // ── Bootstrap: load the user's existing votes BEFORE the first feed batch
+  // so we can (a) seed the history drawer and (b) exclude already-voted memes
+  // from the very first query.
   useEffect(() => {
+    let cancelled = false;
+    async function init() {
+      const supabase = getSupabase();
+      if (!supabase) {
+        setBootstrapped(true);
+        return;
+      }
+      if (userId) {
+        const { data } = await supabase
+          .from(CAPTION_VOTES_TABLE)
+          .select("caption_id, vote_value")
+          .eq("profile_id", userId);
+        if (cancelled) return;
+        const map: Record<string, 1 | -1> = {};
+        for (const v of data ?? []) {
+          if (v.vote_value === 1 || v.vote_value === -1) {
+            map[v.caption_id] = v.vote_value;
+            votedIdsRef.current.add(v.caption_id);
+          }
+        }
+        setVoteState(map);
+      }
+      setBootstrapped(true);
+    }
+    init();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  // First batch only fires once bootstrap is complete (so the exclude set is ready).
+  useEffect(() => {
+    if (!bootstrapped) return;
     loadBatch(0, { reset: true });
-  }, [loadBatch]);
+  }, [bootstrapped, loadBatch]);
 
   // Infinite scroll: load next batch as user nears the end.
   useEffect(() => {
@@ -139,9 +171,13 @@ export function Feed({ userId }: Props) {
   async function handleRefresh() {
     if (refreshing) return;
     setRefreshing(true);
-    // Try to fetch fresh, unseen captions first; if none remain, reset and reload.
-    const { count } = await loadBatch(0, { reset: true, excludeSeen: true });
+    // Refresh shows fresh content the user hasn't seen this session.
+    // The exclude filter still removes previously-voted memes, so refresh never
+    // re-serves something the user has already rated.
+    const { count } = await loadBatch(0, { reset: true });
     if (count === 0) {
+      // Pool is genuinely exhausted — clear in-session seen so they get the
+      // (still-not-voted) memes again rather than an empty feed.
       seenCaptionIds.current.clear();
       await loadBatch(0, { reset: true });
     }
@@ -205,6 +241,8 @@ export function Feed({ userId }: Props) {
         }
       }
       setVoteState((prev) => ({ ...prev, [captionId]: vote }));
+      // Future batches should skip captions the user has now voted on.
+      votedIdsRef.current.add(captionId);
       return true;
     },
     []
@@ -232,6 +270,8 @@ export function Feed({ userId }: Props) {
       delete next[captionId];
       return next;
     });
+    // Unvoted captions become eligible to appear in the feed again on refresh.
+    votedIdsRef.current.delete(captionId);
     return true;
   }, []);
 

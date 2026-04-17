@@ -96,6 +96,22 @@ my-app/
 
 ---
 
+### 2026-04-17 — Header nav clarity + feed excludes already-voted memes
+
+- **Files:** `app/layout.tsx`, `app/components/Feed.tsx`, `AGENTS.md`
+- **Change:**
+  - **Header:** Added a `Feed` link (→ `/`) and re-styled the `Upload` link as a green pill CTA (`bg-emerald-600`, white text, `＋` glyph) so the two primary actions are immediately obvious from the top nav. Logo `Humor Study` still links home.
+  - **Feed exclusion:** Voted captions used to leak back into the feed on refresh and on subsequent infinite-scroll batches because the only exclude list was an in-memory "seen" set that started empty on every page load. Fixed by:
+    1. Adding a bootstrap effect that, on mount, queries `caption_votes` for the signed-in user and seeds both `voteState` (for the history drawer) and a new `votedIdsRef` set (for query exclusion).
+    2. `loadBatch` now always passes `votedIdsRef ∪ seenCaptionIds` to a single `.not("id","in",(…))` filter — applies to first load, infinite scroll, and refresh.
+    3. `upsertVote` adds the caption_id to `votedIdsRef` so the next batch skips it; `clearVote` removes it so unliked captions can return on a future refresh.
+    4. First batch now waits for the bootstrap fetch to complete (`bootstrapped` flag) so the very first query is filtered correctly.
+    5. `setOffset` now increments by `rows.length` (the raw query result count) instead of `newItems.length` (post-image-filter), which avoids overlapping ranges when any rows are dropped.
+  - Removed the `excludeSeen` opt from `loadBatch` since exclusion is now unconditional.
+- **Schema:** Untouched. Only one new query type (the bootstrap `select caption_id, vote_value from caption_votes where profile_id = userId`).
+
+---
+
 ### 2026-04-17 — User-study response: TikTok-style feed, swipe rating, refresh, larger captions, history sidebar, upload progress
 
 - **Files:** `app/components/Feed.tsx` (rewrite), `app/components/HistoryDrawer.tsx` (new), `app/components/ImageUploadForm.tsx` (rewrite), `AGENTS.md`

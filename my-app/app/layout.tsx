@@ -21,12 +21,18 @@ export default function RootLayout({
             <Link href="/" className="text-lg font-semibold text-[var(--foreground)]">
               Humor Study
             </Link>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              <Link
+                href="/"
+                className="rounded-full px-3 py-2 text-sm font-medium text-[var(--foreground)]/80 transition hover:bg-[var(--foreground)]/5 hover:text-[var(--foreground)]"
+              >
+                Feed
+              </Link>
               <Link
                 href="/upload"
-                className="text-sm font-medium text-[var(--foreground)]/80 hover:text-[var(--foreground)]"
+                className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
               >
-                Upload
+                <span aria-hidden>＋</span> Upload
               </Link>
               <AuthStatus />
             </div>

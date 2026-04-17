@@ -96,6 +96,19 @@ my-app/
 
 ---
 
+### 2026-04-17 — Upload page: pick favorite caption + download as meme PNG; remove "saved to feed" message
+
+- **Files:** `app/components/ImageUploadForm.tsx`, `AGENTS.md`
+- **Change:**
+  - Removed the "They've been saved to the feed where everyone can vote on them." line from the success state. New copy is just "Pick your favorite, then download the meme."
+  - Each generated caption is now a `role="radio"` button. Clicking selects it as the favorite (`favoriteIdx` state), highlighted in emerald with a ✓ indicator. Only one can be selected at a time.
+  - New `handleDownload()` renders the user's original image into an offscreen `<canvas>` at full resolution, then draws the chosen caption at the bottom in classic Impact-style ALL-CAPS white-with-black-stroke text. Font size scales with image width (28–110px), text wraps to ~92% of the image width, lines stack from the bottom up. Output is encoded to PNG via `canvas.toBlob` and a temporary `<a download>` is clicked to save it as `meme-<timestamp>.png`. Image is loaded from a same-origin `URL.createObjectURL(selectedFile)` so the canvas never gets tainted (no CORS issue with the CDN).
+  - "Download meme" button is the new primary CTA (emerald). Disabled with a "Select a caption to download" label until a favorite is chosen, "Building meme…" while encoding. "Go to feed" demoted to a secondary outline button. "Upload another" still available.
+  - Added `favoriteIdx`, `downloading`, `downloadError` state. `applyFile` and `reset` clear them.
+- **Schema:** Untouched. No new dependencies; uses only browser canvas APIs.
+
+---
+
 ### 2026-04-17 — Header nav clarity + feed excludes already-voted memes
 
 - **Files:** `app/layout.tsx`, `app/components/Feed.tsx`, `AGENTS.md`

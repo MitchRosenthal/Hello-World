@@ -47,6 +47,9 @@ export function ImageUploadForm() {
   const [cdnUrl, setCdnUrl] = useState<string | null>(null);
   const [imageId, setImageId] = useState<string | null>(null);
   const [captions, setCaptions] = useState<string[] | null>(null);
+  const [favoriteIdx, setFavoriteIdx] = useState<number | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -60,6 +63,8 @@ export function ImageUploadForm() {
     setSelectedFile(null);
     setError(null);
     setCaptions(null);
+    setFavoriteIdx(null);
+    setDownloadError(null);
     setStage("idle");
     setImageId(null);
     setPresignedUrl(null);
@@ -105,9 +110,101 @@ export function ImageUploadForm() {
     setCdnUrl(null);
     setImageId(null);
     setCaptions(null);
+    setFavoriteIdx(null);
+    setDownloadError(null);
     setStage("idle");
     setError(null);
     if (inputRef.current) inputRef.current.value = "";
+  }
+
+  // Render the user's image with the chosen caption baked in at the bottom in
+  // classic Impact-style white-with-black-stroke text, then trigger a PNG download.
+  // Uses the local file (object URL) — same-origin so canvas isn't tainted.
+  async function handleDownload() {
+    if (!selectedFile || favoriteIdx == null || !captions) return;
+    const captionText = captions[favoriteIdx];
+    if (!captionText) return;
+
+    setDownloading(true);
+    setDownloadError(null);
+    const objectUrl = URL.createObjectURL(selectedFile);
+
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new window.Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error("Could not load image for rendering"));
+        el.src = objectUrl;
+      });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+      // Draw the original image as the background.
+      ctx.drawImage(img, 0, 0);
+
+      // Font sized proportionally to image width, with sane min/max.
+      const fontSize = Math.max(28, Math.min(110, Math.floor(img.naturalWidth / 14)));
+      ctx.font = `900 ${fontSize}px Impact, "Anton", "Arial Black", "Helvetica Neue", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = Math.max(3, fontSize / 10);
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
+
+      // Word-wrap the caption to fit ~92% of the image width.
+      const maxWidth = img.naturalWidth * 0.92;
+      const words = captionText.toUpperCase().split(/\s+/).filter(Boolean);
+      const lines: string[] = [];
+      let current = "";
+      for (const w of words) {
+        const test = current ? `${current} ${w}` : w;
+        if (ctx.measureText(test).width > maxWidth && current) {
+          lines.push(current);
+          current = w;
+        } else {
+          current = test;
+        }
+      }
+      if (current) lines.push(current);
+
+      // Stack lines from the bottom up so the last line sits closest to the edge.
+      const lineHeight = fontSize * 1.15;
+      const x = img.naturalWidth / 2;
+      const bottomPadding = Math.max(16, fontSize * 0.4);
+      let y = img.naturalHeight - bottomPadding;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        ctx.strokeText(line, x, y);
+        ctx.fillText(line, x, y);
+        y -= lineHeight;
+      }
+
+      const blob: Blob | null = await new Promise((resolve) =>
+        canvas.toBlob((b) => resolve(b), "image/png")
+      );
+      if (!blob) throw new Error("Could not encode image");
+
+      // Trigger the download.
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = dlUrl;
+      a.download = `meme-${Date.now()}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(dlUrl);
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+      setDownloading(false);
+    }
   }
 
   // Single controlled pipeline: Steps 1–4 run sequentially on "Upload & Generate Captions".
@@ -349,28 +446,69 @@ export function ImageUploadForm() {
       {/* Generated captions display */}
       {captions && captions.length > 0 && stage === "done" && (
         <div className="mb-5">
-          <p className="mb-3 text-base font-semibold text-[var(--foreground)]">
+          <p className="mb-1 text-base font-semibold text-[var(--foreground)]">
             ✨ Your captions are ready
           </p>
           <p className="mb-3 text-sm text-[var(--foreground)]/70">
-            They&apos;ve been saved to the feed where everyone can vote on them.
+            Pick your favorite, then download the meme.
           </p>
-          <div className="space-y-2">
-            {captions.map((text, i) => (
-              <div
-                key={i}
-                className="rounded-lg border border-[var(--foreground)]/15 bg-[var(--foreground)]/5 px-4 py-3 text-base text-[var(--foreground)]"
-              >
-                {text}
-              </div>
-            ))}
+          <div role="radiogroup" aria-label="Choose your favorite caption" className="space-y-2">
+            {captions.map((text, i) => {
+              const selected = favoriteIdx === i;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setFavoriteIdx(i)}
+                  className={
+                    "flex w-full items-start gap-3 rounded-lg border px-4 py-3 text-left text-base transition " +
+                    (selected
+                      ? "border-emerald-500/60 bg-emerald-500/10 text-[var(--foreground)] ring-2 ring-emerald-500/30"
+                      : "border-[var(--foreground)]/15 bg-[var(--foreground)]/5 text-[var(--foreground)] hover:border-[var(--foreground)]/30 hover:bg-[var(--foreground)]/[0.08]")
+                  }
+                >
+                  <span
+                    aria-hidden
+                    className={
+                      "mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border-2 " +
+                      (selected
+                        ? "border-emerald-500 bg-emerald-500 text-white"
+                        : "border-[var(--foreground)]/30")
+                    }
+                  >
+                    {selected ? "✓" : ""}
+                  </span>
+                  <span>{text}</span>
+                </button>
+              );
+            })}
           </div>
+
+          {downloadError && (
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400">{downloadError}</p>
+          )}
+
           <div className="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={favoriteIdx == null || downloading}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span aria-hidden>⬇</span>
+              {downloading
+                ? "Building meme…"
+                : favoriteIdx == null
+                  ? "Select a caption to download"
+                  : "Download meme"}
+            </button>
             <Link
               href="/"
-              className="rounded-lg border border-[var(--foreground)]/20 bg-[var(--foreground)] px-4 py-2 text-sm font-medium text-[var(--background)] hover:opacity-90"
+              className="rounded-lg border border-[var(--foreground)]/20 bg-transparent px-4 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/5"
             >
-              See it in the feed →
+              Go to feed
             </Link>
             <button
               type="button"

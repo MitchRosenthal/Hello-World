@@ -24,11 +24,11 @@ export type Caption = {
   [key: string]: unknown;
 };
 
-/** Insert shape for public.caption_votes (profile_id = auth user id) */
+/** Insert shape for public.caption_votes (profile_id / *_by_user_id = profiles.id, same as auth user id) */
 export type CaptionVoteInsert = {
   caption_id: string;
   profile_id: string;
   vote_value: 1 | -1;
-  created_datetime_utc: string;
-  modified_datetime_utc: string;
+  created_by_user_id: string;
+  modified_by_user_id: string;
 };

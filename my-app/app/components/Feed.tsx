@@ -2,12 +2,14 @@
 
 import { getSupabase } from "@/lib/supabase/client";
 import type { Caption, CaptionVoteInsert, Image } from "@/src/types/supabase";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { HistoryDrawer } from "./HistoryDrawer";
 
 const CAPTIONS_TABLE = "captions";
-const IMAGES_TABLE = "images";
 const CAPTION_VOTES_TABLE = "caption_votes";
 const BATCH_SIZE = 20;
+// Threshold (in px) past which a horizontal swipe is treated as a vote.
+const SWIPE_THRESHOLD = 80;
 
 function imageUrl(row: Image | null): string | null {
   if (!row) return null;
@@ -33,33 +35,50 @@ export function Feed({ userId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [voteError, setVoteError] = useState<string | null>(null);
   const [votingCaptionId, setVotingCaptionId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
+  // Track captions we've already shown so refresh can serve unseen content.
+  const seenCaptionIds = useRef<Set<string>>(new Set());
+
+  // Per-card swipe gesture tracking.
+  const dragStartX = useRef<Record<string, number>>({});
+  const [dragX, setDragX] = useState<Record<string, number>>({});
+
   const loadBatch = useCallback(
-    async (from: number) => {
+    async (from: number, opts: { reset?: boolean; excludeSeen?: boolean } = {}) => {
       const supabase = getSupabase();
       if (!supabase) {
         setError("Supabase not configured.");
-        return;
+        return { count: 0 };
       }
       setLoading(true);
       setError(null);
 
-      const { data: rows, error: captionsError } = await supabase
+      let query = supabase
         .from(CAPTIONS_TABLE)
         .select("*, images!inner(*)")
-        .range(from, from + BATCH_SIZE - 1)
-        .order("id", { ascending: true });
+        .order("id", { ascending: true })
+        .range(from, from + BATCH_SIZE - 1);
+
+      if (opts.excludeSeen && seenCaptionIds.current.size > 0) {
+        // Supabase's not.in expects a parenthesized list literal.
+        const ids = Array.from(seenCaptionIds.current);
+        query = query.not("id", "in", `(${ids.join(",")})`);
+      }
+
+      const { data: rows, error: captionsError } = await query;
 
       if (captionsError) {
         setError(captionsError.message);
         setLoading(false);
-        return;
+        return { count: 0 };
       }
       if (!rows?.length) {
         setHasMore(false);
         setLoading(false);
-        return;
+        return { count: 0 };
       }
 
       type Row = Caption & { images: Image | null };
@@ -72,7 +91,7 @@ export function Feed({ userId }: Props) {
 
       const captionIds = newItems.map((item) => item.caption.id);
 
-      let voteMap: Record<string, 1 | -1> = {};
+      const voteMap: Record<string, 1 | -1> = {};
       if (userId && captionIds.length > 0) {
         const { data: votes } = await supabase
           .from(CAPTION_VOTES_TABLE)
@@ -85,19 +104,24 @@ export function Feed({ userId }: Props) {
         }
       }
 
-      setItems((prev) => (from === 0 ? newItems : [...prev, ...newItems]));
-      setVoteState((prev) => ({ ...prev, ...voteMap }));
-      setOffset(from + newItems.length);
-      setHasMore(newItems.length === BATCH_SIZE);
+      // Track seen ids for the unseen-aware refresh.
+      for (const id of captionIds) seenCaptionIds.current.add(id);
+
+      setItems((prev) => (opts.reset ? newItems : [...prev, ...newItems]));
+      setVoteState((prev) => (opts.reset ? voteMap : { ...prev, ...voteMap }));
+      setOffset(opts.reset ? newItems.length : from + newItems.length);
+      setHasMore(rows.length === BATCH_SIZE);
       setLoading(false);
+      return { count: newItems.length };
     },
     [userId]
   );
 
   useEffect(() => {
-    loadBatch(0);
+    loadBatch(0, { reset: true });
   }, [loadBatch]);
 
+  // Infinite scroll: load next batch as user nears the end.
   useEffect(() => {
     if (!hasMore || loading) return;
     const el = sentinelRef.current;
@@ -106,152 +130,300 @@ export function Feed({ userId }: Props) {
       (entries) => {
         if (entries[0]?.isIntersecting) loadBatch(offset);
       },
-      { rootMargin: "200px" }
+      { rootMargin: "400px" }
     );
     obs.observe(el);
     return () => obs.disconnect();
   }, [hasMore, loading, offset, loadBatch]);
 
-  async function handleVote(captionId: string, vote: 1 | -1) {
-    const supabase = getSupabase();
-    if (!supabase) {
-      setVoteError("Supabase not configured.");
-      return;
+  async function handleRefresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    // Try to fetch fresh, unseen captions first; if none remain, reset and reload.
+    const { count } = await loadBatch(0, { reset: true, excludeSeen: true });
+    if (count === 0) {
+      seenCaptionIds.current.clear();
+      await loadBatch(0, { reset: true });
     }
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      setVoteError("Sign in to vote.");
-      return;
+    setRefreshing(false);
+    // Snap viewport back to top.
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
     }
-    setVoteError(null);
-    setVotingCaptionId(captionId);
-    const now = new Date().toISOString();
+  }
 
-    const { data: existing } = await supabase
-      .from(CAPTION_VOTES_TABLE)
-      .select("id")
-      .eq("profile_id", user.id)
-      .eq("caption_id", captionId)
-      .maybeSingle();
+  const upsertVote = useCallback(
+    async (captionId: string, vote: 1 | -1) => {
+      const supabase = getSupabase();
+      if (!supabase) {
+        setVoteError("Supabase not configured.");
+        return false;
+      }
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setVoteError("Sign in to vote.");
+        return false;
+      }
+      setVoteError(null);
+      setVotingCaptionId(captionId);
 
-    if (existing) {
-      const { error: updateError } = await supabase
+      const { data: existing } = await supabase
         .from(CAPTION_VOTES_TABLE)
-        .update({ vote_value: vote, modified_datetime_utc: now })
+        .select("id")
         .eq("profile_id", user.id)
-        .eq("caption_id", captionId);
-      setVotingCaptionId(null);
-      if (updateError) {
-        setVoteError(updateError.message);
-        return;
+        .eq("caption_id", captionId)
+        .maybeSingle();
+
+      if (existing) {
+        const { error: updateError } = await supabase
+          .from(CAPTION_VOTES_TABLE)
+          .update({ vote_value: vote, modified_by_user_id: user.id })
+          .eq("profile_id", user.id)
+          .eq("caption_id", captionId);
+        setVotingCaptionId(null);
+        if (updateError) {
+          setVoteError(updateError.message);
+          return false;
+        }
+      } else {
+        const row: CaptionVoteInsert = {
+          caption_id: captionId,
+          profile_id: user.id,
+          vote_value: vote,
+          created_by_user_id: user.id,
+          modified_by_user_id: user.id,
+        };
+        const { error: insertError } = await supabase
+          .from(CAPTION_VOTES_TABLE)
+          .insert(row);
+        setVotingCaptionId(null);
+        if (insertError) {
+          setVoteError(insertError.message);
+          return false;
+        }
       }
-    } else {
-      const row: CaptionVoteInsert = {
-        caption_id: captionId,
-        profile_id: user.id,
-        vote_value: vote,
-        created_datetime_utc: now,
-        modified_datetime_utc: now,
-      };
-      const { error: insertError } = await supabase
-        .from(CAPTION_VOTES_TABLE)
-        .insert(row);
-      setVotingCaptionId(null);
-      if (insertError) {
-        setVoteError(insertError.message);
-        return;
-      }
+      setVoteState((prev) => ({ ...prev, [captionId]: vote }));
+      return true;
+    },
+    []
+  );
+
+  // Remove a vote entirely (called from the history drawer's "unlike").
+  const clearVote = useCallback(async (captionId: string) => {
+    const supabase = getSupabase();
+    if (!supabase) return false;
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return false;
+    const { error: deleteError } = await supabase
+      .from(CAPTION_VOTES_TABLE)
+      .delete()
+      .eq("profile_id", user.id)
+      .eq("caption_id", captionId);
+    if (deleteError) {
+      setVoteError(deleteError.message);
+      return false;
     }
-    setVoteState((prev) => ({ ...prev, [captionId]: vote }));
+    setVoteState((prev) => {
+      const next = { ...prev };
+      delete next[captionId];
+      return next;
+    });
+    return true;
+  }, []);
+
+  // Pointer-based swipe handlers (works for mouse, touch, pen).
+  function handlePointerDown(captionId: string, clientX: number) {
+    dragStartX.current[captionId] = clientX;
+  }
+
+  function handlePointerMove(captionId: string, clientX: number) {
+    const start = dragStartX.current[captionId];
+    if (start == null) return;
+    const dx = clientX - start;
+    setDragX((prev) => ({ ...prev, [captionId]: dx }));
+  }
+
+  function handlePointerEnd(captionId: string) {
+    const dx = dragX[captionId] ?? 0;
+    delete dragStartX.current[captionId];
+    setDragX((prev) => {
+      const next = { ...prev };
+      delete next[captionId];
+      return next;
+    });
+    if (!userId) return;
+    if (dx >= SWIPE_THRESHOLD) {
+      void upsertVote(captionId, 1);
+    } else if (dx <= -SWIPE_THRESHOLD) {
+      void upsertVote(captionId, -1);
+    }
   }
 
   const canVote = !!userId;
   const isVoting = (id: string) => votingCaptionId === id;
 
-  const voteBtnBase =
-    "rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors duration-150 disabled:opacity-50 ";
-  const voteBtnDefault =
-    "border-[var(--foreground)]/20 bg-transparent text-[var(--foreground)]/80 hover:bg-[var(--foreground)]/5 hover:border-[var(--foreground)]/30";
-  const upvoteSelected =
-    "border-emerald-500/60 bg-emerald-500/20 text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300";
-  const downvoteSelected =
-    "border-red-500/60 bg-red-500/20 text-red-700 ring-1 ring-red-500/30 dark:text-red-300";
+  // Hint pill: "Swipe right to like" appears briefly the first time.
+  const swipeHintShown = useMemo(() => items.length > 0 && canVote, [items.length, canVote]);
 
   return (
-    <div className="mx-auto max-w-6xl px-1">
+    <div className="relative">
+      {/* Floating action bar — refresh + history toggle */}
+      <div className="sticky top-0 z-20 mb-4 flex items-center justify-between gap-3 bg-[var(--background)]/80 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-[var(--background)]/60">
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="inline-flex items-center gap-2 rounded-full border border-[var(--foreground)]/20 bg-[var(--background)] px-4 py-2 text-sm font-medium text-[var(--foreground)] shadow-sm transition hover:bg-[var(--foreground)]/5 disabled:opacity-50"
+          aria-label="Refresh feed with unseen memes"
+        >
+          <span className={refreshing ? "inline-block animate-spin" : "inline-block"}>↻</span>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setHistoryOpen(true)}
+          className="inline-flex items-center gap-2 rounded-full border border-[var(--foreground)]/20 bg-[var(--background)] px-4 py-2 text-sm font-medium text-[var(--foreground)] shadow-sm transition hover:bg-[var(--foreground)]/5"
+          aria-label="View liked and disliked memes"
+        >
+          ☰ History
+        </button>
+      </div>
+
       {voteError && (
-        <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+        <div className="mx-auto mb-4 max-w-2xl rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
           {voteError}
         </div>
       )}
       {error && (
-        <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+        <div className="mx-auto mb-4 max-w-2xl rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
           {error}
         </div>
       )}
-      <div className="grid grid-cols-1 gap-6 pb-8 sm:grid-cols-2 lg:grid-cols-3">
+
+      {swipeHintShown && (
+        <p className="mx-auto mb-4 max-w-2xl text-center text-xs text-[var(--foreground)]/50">
+          Tip: swipe a card right to upvote, left to downvote — or use the buttons.
+        </p>
+      )}
+
+      {/* One-meme-at-a-time vertical feed with scroll-snap. */}
+      <div className="mx-auto flex max-w-2xl flex-col gap-12 pb-16">
         {items.map(({ caption, image }) => {
           const src = imageUrl(image);
           const currentVote = voteState[caption.id];
+          const dx = dragX[caption.id] ?? 0;
+          const rotation = Math.max(-12, Math.min(12, dx / 16));
+          const swipeOpacityHint =
+            dx === 0
+              ? null
+              : dx > 0
+                ? { color: "emerald" as const, label: "👍 LIKE" }
+                : { color: "red" as const, label: "👎 PASS" };
+
           return (
             <article
               key={caption.id}
-              className="flex flex-col overflow-hidden rounded-2xl border border-[var(--foreground)]/10 bg-[var(--background)] shadow-lg transition-shadow duration-200 hover:shadow-xl"
+              className="flex min-h-[85vh] snap-start flex-col items-center justify-center"
             >
-              <div className="relative flex min-h-[140px] w-full items-center justify-center overflow-hidden bg-[var(--foreground)]/[0.06]">
-                {src ? (
-                  <img
-                    src={src}
-                    alt=""
-                    className="max-h-[45vh] w-full object-contain"
-                  />
-                ) : (
-                  <div className="flex h-32 w-full items-center justify-center text-[var(--foreground)]/40">
-                    No image
+              <div
+                className="relative w-full select-none overflow-hidden rounded-3xl border border-[var(--foreground)]/10 bg-[var(--background)] shadow-2xl"
+                style={{
+                  transform: `translateX(${dx}px) rotate(${rotation}deg)`,
+                  transition: dx === 0 ? "transform 200ms ease-out" : "none",
+                  touchAction: "pan-y",
+                }}
+                onPointerDown={(e) => {
+                  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                  handlePointerDown(caption.id, e.clientX);
+                }}
+                onPointerMove={(e) => handlePointerMove(caption.id, e.clientX)}
+                onPointerUp={() => handlePointerEnd(caption.id)}
+                onPointerCancel={() => handlePointerEnd(caption.id)}
+              >
+                {/* Swipe overlay hint */}
+                {swipeOpacityHint && (
+                  <div
+                    className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-5xl font-black tracking-wide ${
+                      swipeOpacityHint.color === "emerald"
+                        ? "bg-emerald-500/20 text-emerald-600"
+                        : "bg-red-500/20 text-red-600"
+                    }`}
+                    style={{ opacity: Math.min(1, Math.abs(dx) / SWIPE_THRESHOLD) }}
+                  >
+                    {swipeOpacityHint.label}
                   </div>
                 )}
-              </div>
-              <div className="flex flex-1 flex-col gap-3 border-t border-[var(--foreground)]/5 p-4">
-                <p className="text-[15px] leading-snug text-[var(--foreground)]/90">
-                  {captionText(caption)}
-                </p>
-                <div className="flex items-center justify-center gap-2 pt-1">
-                  {canVote ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleVote(caption.id, 1)}
-                        disabled={isVoting(caption.id)}
-                        className={
-                          voteBtnBase +
-                          (currentVote === 1 ? upvoteSelected : voteBtnDefault)
-                        }
-                      >
-                        {isVoting(caption.id) ? "…" : "↑ Upvote"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleVote(caption.id, -1)}
-                        disabled={isVoting(caption.id)}
-                        className={
-                          voteBtnBase +
-                          (currentVote === -1 ? downvoteSelected : voteBtnDefault)
-                        }
-                      >
-                        {isVoting(caption.id) ? "…" : "↓ Downvote"}
-                      </button>
-                    </>
+
+                <div className="relative flex w-full items-center justify-center overflow-hidden bg-[var(--foreground)]/[0.06]">
+                  {src ? (
+                    <img
+                      src={src}
+                      alt=""
+                      draggable={false}
+                      className="max-h-[60vh] w-full object-contain"
+                    />
                   ) : (
-                    <span className="text-sm text-[var(--foreground)]/50">
-                      Sign in to vote
-                    </span>
+                    <div className="flex h-64 w-full items-center justify-center text-[var(--foreground)]/40">
+                      No image
+                    </div>
                   )}
+                </div>
+
+                <div className="flex flex-col gap-6 border-t border-[var(--foreground)]/5 p-6 sm:p-8">
+                  {/* Bigger, easier-to-read caption */}
+                  <p className="text-2xl font-semibold leading-snug text-[var(--foreground)] sm:text-3xl">
+                    {captionText(caption)}
+                  </p>
+
+                  <div className="flex items-center justify-center gap-4 pt-1">
+                    {canVote ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => upsertVote(caption.id, -1)}
+                          disabled={isVoting(caption.id)}
+                          className={
+                            "min-w-[7rem] rounded-full border px-5 py-3 text-base font-semibold transition disabled:opacity-50 " +
+                            (currentVote === -1
+                              ? "border-red-500/60 bg-red-500/20 text-red-700 ring-2 ring-red-500/30 dark:text-red-300"
+                              : "border-[var(--foreground)]/20 bg-transparent text-[var(--foreground)]/80 hover:border-red-500/40 hover:bg-red-500/5")
+                          }
+                          aria-label="Downvote caption"
+                        >
+                          {isVoting(caption.id) ? "…" : "👎 Pass"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => upsertVote(caption.id, 1)}
+                          disabled={isVoting(caption.id)}
+                          className={
+                            "min-w-[7rem] rounded-full border px-5 py-3 text-base font-semibold transition disabled:opacity-50 " +
+                            (currentVote === 1
+                              ? "border-emerald-500/60 bg-emerald-500/20 text-emerald-700 ring-2 ring-emerald-500/30 dark:text-emerald-300"
+                              : "border-[var(--foreground)]/20 bg-transparent text-[var(--foreground)]/80 hover:border-emerald-500/40 hover:bg-emerald-500/5")
+                          }
+                          aria-label="Upvote caption"
+                        >
+                          {isVoting(caption.id) ? "…" : "👍 Funny"}
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-base text-[var(--foreground)]/60">
+                        Sign in to vote
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </article>
           );
         })}
       </div>
+
       <div ref={sentinelRef} className="h-4" aria-hidden />
       {loading && (
         <p className="py-6 text-center text-sm text-[var(--foreground)]/50">
@@ -260,7 +432,7 @@ export function Feed({ userId }: Props) {
       )}
       {!hasMore && items.length > 0 && (
         <p className="py-6 text-center text-sm text-[var(--foreground)]/50">
-          End of feed
+          You&apos;ve seen them all — try Refresh for fresh memes.
         </p>
       )}
       {!loading && items.length === 0 && !error && (
@@ -268,6 +440,21 @@ export function Feed({ userId }: Props) {
           No captions yet.
         </p>
       )}
+
+      {/* Liked / Disliked sidebar */}
+      <HistoryDrawer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        userId={userId}
+        voteState={voteState}
+        onChangeVote={async (captionId, next) => {
+          if (next == null) {
+            await clearVote(captionId);
+          } else {
+            await upsertVote(captionId, next);
+          }
+        }}
+      />
     </div>
   );
 }

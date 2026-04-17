@@ -86,13 +86,33 @@ my-app/
 - **Dynamic routes:** Home uses `export const dynamic = "force-dynamic"`.
 - **Hydration:** Layout uses `suppressHydrationWarning` on `<html>` and `<body>` to avoid noise from browser extensions (e.g. `wotdisconnected`).
 - **Images:** Fetched on server via the same server Supabase client used for auth; type `Image` from `@/src/types/supabase`.
-- **Caption votes:** Table `caption_votes` (caption_id, user_id, vote); RLS allows INSERT/UPDATE only for authenticated user’s own rows. Voting UI and upsert in `ImagesList`; `userId` passed from server; client uses `getSupabase()` for mutations.
+- **Caption votes:** Table `caption_votes` (caption_id, profile_id, vote_value, audit columns `created_by_user_id` / `modified_by_user_id`); RLS allows INSERT/UPDATE only for authenticated user’s own rows. Voting UI in `Feed.tsx`; `userId` passed from server; client uses `getSupabase()` for mutations.
 
 ---
 
 ## Changelog (changes made to the app)
 
 *Agents: append new entries at the top of this section when you change behavior or structure.*
+
+---
+
+### 2026-04-17 — User-study response: TikTok-style feed, swipe rating, refresh, larger captions, history sidebar, upload progress
+
+- **Files:** `app/components/Feed.tsx` (rewrite), `app/components/HistoryDrawer.tsx` (new), `app/components/ImageUploadForm.tsx` (rewrite), `AGENTS.md`
+- **Change:** Implemented the top-priority improvements from `user_study_report.md` based on feedback from Shai, Evan, and Madeleine.
+  - **Feed redesign:** Replaced 3-column grid in `Feed.tsx` with a single-meme-per-viewport vertical layout (max-w-2xl, min-h-[85vh] articles). Caption typography upgraded to `text-2xl`/`text-3xl` semibold so memes are readable at a glance (addresses Evan's "text too small" complaint and Shai's "3-per-row felt overwhelming" complaint).
+  - **Swipe-to-vote:** Each card has pointer-event-based swipe detection. Right swipe past 80px = upvote; left swipe = downvote. Card translates + rotates while dragging and shows a "👍 LIKE" / "👎 PASS" overlay that fades in with drag distance. Up/down buttons remain (Madeleine cautioned swipe gestures can be unreliable, so we kept buttons as the reliable path) and are now larger (min-w-[7rem], py-3, text-base).
+  - **Refresh button:** Sticky top action bar holds a Refresh control. Tracks already-shown caption ids in a ref Set; on refresh, queries `not.in` to fetch only unseen captions. If none remain, clears the seen set and reloads from the top so the feed always returns something. Addresses Evan's explicit "should be a refresh button" request.
+  - **History sidebar:** New `HistoryDrawer.tsx` slides in from the right with two tabs (👍 Liked / 👎 Disliked). Loads captions+images for any caption_ids the user has voted on. Each row has Remove (deletes the caption_votes row — addresses Madeleine's "no way to unlike" complaint), plus a Move to opposite-pile shortcut. Drawer pulls vote state from `Feed`; Feed exposes `clearVote` (DELETE on caption_votes) and `upsertVote` callbacks.
+  - **Upload progress states:** `ImageUploadForm` now tracks a `Stage` enum (preparing → uploading → registering → generating → done) and renders a 5-step progress checklist with active spinner / completed checkmarks. Drop zone is larger, click-to-browse, and visually inviting. On success, captions render with an explanation ("they've been saved to the feed") plus a primary CTA to view the feed and a secondary CTA to upload another. Addresses Shai/Madeleine confusion about "what happens after captions are generated" and "is anything happening?" during the wait.
+- **Not changed:** Auth flow, Supabase clients, route protection, schema. Caption text fallback and image url helpers reused. No new dependencies.
+
+---
+
+### 2025-01-29 — caption_votes INSERT/UPDATE: created_by_user_id, modified_by_user_id; drop manual datetimes
+
+- **Files:** `app/components/Feed.tsx`, `src/types/supabase.ts`, `AGENTS.md`
+- **Change:** Inserts now send `created_by_user_id` and `modified_by_user_id` (both `user.id` / profiles.id). Updates set `modified_by_user_id` only. Removed app-supplied `created_datetime_utc` / `modified_datetime_utc` (assumed DB defaults/triggers set NOW()). `CaptionVoteInsert` updated accordingly.
 
 ---
 

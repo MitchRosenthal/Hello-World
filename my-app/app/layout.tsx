@@ -4,8 +4,8 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Hello World",
-  description: "Hello World app",
+  title: "Humor Study",
+  description: "Explore AI-generated image captions, rate your favorites, and create downloadable memes.",
 };
 
 export default function RootLayout({

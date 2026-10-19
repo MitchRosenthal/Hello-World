@@ -92,6 +92,9 @@ my-app/
 
 ## Changelog (changes made to the app)
 
+### Portfolio cleanup
+- `app/layout.tsx`: replace generic browser metadata with the existing Humor Study product name and description; authentication and routes unchanged.
+
 *Agents: append new entries at the top of this section when you change behavior or structure.*
 
 ---
